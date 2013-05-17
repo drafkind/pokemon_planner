@@ -1,103 +1,100 @@
-import urllib;
 import os;
-import errno;
-import bs4;
-import StringIO;
-import re;
 
-CACHE_DIR = "cache";
-try:
-	os.makedirs(CACHE_DIR);
-except OSError as exc:
-	if exc.errno == errno.EEXIST and os.path.isdir(CACHE_DIR):
-		pass
-	else: raise
+STAY = "STAY";
+INNER = "INNER";
+NEXT = "NEXT";
+DONE = "DONE";
+DONE_AND_CONSUME = "DONE_AND_CONSUME";
 
-def getSoupFor(url, local):
-	localFileName = CACHE_DIR + "/" + local;
-	(filename, headers) = urllib.urlretrieve(url, localFileName);
-	return bs4.BeautifulSoup(open(filename, "r"));
+def processSection(state, text):
+	#print "Section: " + text;
+	if (text == '_______________________________________________________________________________\n'):
+		return (DONE, [], state)
+	return (STAY, [], state);
 
-class ParseableSection:
-	def __init__(self, name, nextName):
-		self.name = name;
-		self.nextName = nextName;
+def processMonsterListing(state, text):
+	print "Walkthrough Monsters: " + text
+	if (text == '_________________________________________________\n'):
+		return (DONE_AND_CONSUME, [], state)
 
-	def parse(self, text):
-		return;
+	return (STAY, [], state)
 
-	def done(self):
-		return;
+def processWalkthroughSectionTitle(state, text):
+	print "Walkthrough SectionTitle: " + text;
+	if (text == '_________________________________________________\n'):
+		return (DONE_AND_CONSUME, processWalkthroughSection, state)
+	stripped = text.strip();
+	if (stripped.startswith('[')):
+		state['walkthrough_subsection'] = stripped
+		print stripped
+	elif (stripped == 'Pokemon           Type       Version  Rate  Level'):
+		return (NEXT, processMonsterListing, state);
+		
+	return (STAY, [], state);
 
-class LandoKashmirWalkthru(ParseableSection):
-	def __init__(self, name, nextName):
-		ParseableSection.__init__(self, name, nextName)
-		self.state = "SECTIONTITLE";
-		self.working_subsection_title = "";
-		self.oldText = "";
+def processTypeShorthand(state, text):
+	#print "Type Shorthand: " + text;
+	if (text == '_________________________________________________\n'):
+		return (DONE, [], state);
 
-	def parse(self, text):
-		previousLineBlank = len(self.oldText.strip(' \t\r\n')) == 0;
+	t = text.split();
+	state['types'][t[0]] = t[1];
+	return (STAY, [], state);
 
-		if (text.startswith("____")):
-			self.state = "SUBSECTION_DIVIDER";
-		elif (self.state == "SUBSECTION_DIVIDER"): 
-			self.working_subsection_title = text;
-			print text
-			self.state = "SUBSECTION_TEXT";
-		elif (self.state == "SUBSECTION_TEXT" and previousLineBlank and re.search('\$[0-9]+$', text) != None):
-			print text
-			self.state = "SUBSECTION_TRAINER";
-		elif (self.state == "SUBSECTION_TRAINER"):
-			match = re.search('(OR)?\s*([a-zA-Z()]+),\s*level ([0-9]+)\s*-\s*([^(]+)\(([0-9]+) EXP.\)\s*', text); 
-			if match:
-				print match.groups()
-			else:
-				self.state = "SUBSECTION_TEXT";
-		elif (self.state == "SUBSECTION_TEXT" and previousLineBlank and re.search('Wild Pokemon:\s*$')):
-			match = re.search('(\s+) Wild Pokemon:\s*', text);
-			print match.groups()
-			self.state = "SUBSECTION_WILD"
-		elif (self.state == "SUBSECTION_WILD"):
-			match = re.search
+def processWalkthroughSection(state, text):
+	print "Walkthrough: " + text;
+	if (text == '_________________________________________________\n'):
+		return (INNER, processWalkthroughSectionTitle, state)
+	if (text == '--------------\n' and state['previous'] == 'Type Shorthand\n'):
+		return (INNER, processTypeShorthand, state)
+	return (STAY, [], state);
 
+def processSectionTitle(state, text):
+	#print "Title: " + text;
+	if (text == '_______________________________________________________________________________\n'):
+		if (state['title'] == "Table of Contents"):
+			return (NEXT, processSection, state)
+		elif (state['title'] == "I. The Walkthrough"):
+			return (NEXT, processWalkthroughSection, state)
+	elif (len(text.strip()) > 0):
+		state['title'] = text.strip();
+	return (STAY, [], state);
 
-		#print self.state;
-		#print self.name;
-	
-		self.oldText = text;
-
-	def done(self):
-		return;
-
-def processLandoKashmirFaq():
-	soup = getSoupFor("http://www.gamefaqs.com/gameboy/367023-pokemon-red-version/faqs/42712", "42712.html");
-
-	documentText = soup.find('div', id='body').pre.text;
-	buffer = StringIO.StringIO(documentText);
-
-	sectionTransitions = {}
-	sectionTransitions["TOC"] = ParseableSection("TOC", "A");
-	sectionTransitions["A"] = ParseableSection("A", "B");
-	sectionTransitions["B"] = LandoKashmirWalkthru("B", "C");
-	sectionTransitions["C"] = ParseableSection("C", "D");
-	sectionTransitions["D"] = ParseableSection("D", "E");
-	sectionTransitions["E"] = ParseableSection("E", "");
-
-	currentSection = sectionTransitions["TOC"];
-	for currentLine in buffer:
-		if (currentLine.startswith("####")):
-			currentSection.done();
-			currentSection = sectionTransitions[currentSection.nextName];
-		currentSection.parse(currentLine);
-
-	currentSection.done();
+def baseProcessor(state, text):
+	#print "Base: " + text;
+	if (text == '_______________________________________________________________________________\n'):
+		return (INNER, processSectionTitle, state)
+	return (STAY, [], state);
 
 def processZerokidFaq():
-	soup = getSoupFor("http://www.gamefaqs.com/gameboy/367023-pokemon-red-version/faqs/64175", "64175.html");
+	fileName = "/home/local/ANT/rafkindd/Downloads/Pokemen_Red_Faq_by_zerokid.txt";
 
-	documentText = soup.find('div', id='body').pre.text;
-	buffer = StringIO.StringIO(documentText);
+	processorStack = [];
+	processorStack.append(baseProcessor);
+
+	transition = "";
+	newProc = [];
+	state = {};
+	state['types'] = {};
+	state['areas'] = {};
+
+	with open(fileName, "r") as inFile:
+		for line in inFile:
+			iterations = 1;
+			while (iterations > 0):
+				currentProcessor = processorStack[len(processorStack)-1]
+				(transition, newProc, state) = currentProcessor(state, line);
+				iterations -= 1;
+				if (transition == INNER):
+					processorStack.append(newProc);
+				elif (transition == NEXT):
+					processorStack[len(processorStack)-1] = newProc;
+				elif (transition == DONE):
+					currentProcessor = processorStack.pop();
+					iterations += 1;
+				elif (transition == DONE_AND_CONSUME):
+					currentProcessor = processorStack.pop();
+			state['previous'] = line
 
 if __name__ == "__main__":
-	processLandoKashmirFaq();
+	processZerokidFaq();
